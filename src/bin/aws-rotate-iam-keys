@@ -110,29 +110,28 @@ if [[ $(echo "${ACCESS_KEY_IDS[@]}" | tr ' ' '\n' | sort -u | wc -l) -ne "1" ]];
   fi
 fi
 
-# Set AWS CLI env vars so we can interact with the API without using a profile,
-# which means we can delete the old access key *after* updating the profiles to
-# use the new access key, without having to wait for the new key to propagate
-export AWS_ACCESS_KEY_ID=$ACCESS_KEY_ID
-export AWS_SECRET_ACCESS_KEY=$SECRET_ACCESS_KEY
-export AWS_DEFAULT_REGION=$DEFAULT_REGION
+OLD_ACCESS_KEY_ID=$ACCESS_KEY_ID
+OLD_SECRET_ACCESS_KEY=$SECRET_ACCESS_KEY
+OLD_DEFAULT_REGION=$DEFAULT_REGION
 
 # Disable AWS CLI pager to ensure commands run without prompting for user interaction
 # This should only be relevant when run from a terminal, i.e. when stdout is a tty
 export AWS_PAGER=""
 
-# Clear AWS session token to avoid issues with tools like awsume, which export
-# AWS env vars (probably only relevant when run interactively from a terminal)
-export AWS_SESSION_TOKEN=""
+# TODO: we're now presuming AWS CLI env vars are set with temp ones, which may not be the case; if they're not, then we
+# need to export OLD_* to AWS_* env vars so those will be used and the following AWS commands have right env
+
+# alternatively, just get temp sts vars? 
 
 echo "Verifying credentials"
+
 KEY_COUNT=$(aws iam list-access-keys --output json | jq '.AccessKeyMetadata | length' || exit 1)
 if [[ "$KEY_COUNT" -gt "1" ]]; then
   if [[ $FORCE ]]; then
     echo "More than 1 access key found. Force option enabled, so deleting unknown access keys"
     KEYS=$(aws iam list-access-keys --output json | jq -r '.AccessKeyMetadata[].AccessKeyId' || exit 1)
     for key in $KEYS; do
-      if [[ $key == $AWS_ACCESS_KEY_ID ]]; then continue; fi
+      if [[ $key == OLD_ACCESS_KEY_ID ]]; then continue; fi
       aws iam delete-access-key --access-key-id $key
       echo "Deleted unknown key $key"
     done
@@ -149,19 +148,12 @@ NEW_SECRET_ACCESS_KEY=$(echo $RESPONSE | jq -r '.SecretAccessKey')
 if [[ "$NEW_ACCESS_KEY_ID" != "" && "$NEW_SECRET_ACCESS_KEY" != "" ]]; then
   echo "Created new key $NEW_ACCESS_KEY_ID"
 
-  OLD_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
-  OLD_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
-  export AWS_ACCESS_KEY_ID=$NEW_ACCESS_KEY_ID
-  export AWS_SECRET_ACCESS_KEY=$NEW_SECRET_ACCESS_KEY
-
   echo "Verifying new access key"
   for i in $(seq 1 20); do
-    ERROR=$(aws iam list-access-keys 2>&1 1>/dev/null) && break || sleep 3
+    ERROR=$(aws sts get-caller-identity 2>&1 1>/dev/null) && break || sleep 3
   done
   if [[ $ERROR ]]; then
     echo $ERROR >&2
-    export AWS_ACCESS_KEY_ID=$OLD_ACCESS_KEY_ID
-    export AWS_SECRET_ACCESS_KEY=$OLD_SECRET_ACCESS_KEY
     aws iam delete-access-key --access-key-id $NEW_ACCESS_KEY_ID
     exit 1
   fi
